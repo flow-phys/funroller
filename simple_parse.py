@@ -9,7 +9,7 @@ except:
     exit()
 
     
-verbose = True
+verbose = False #True
 replace = False
 
 
@@ -30,10 +30,20 @@ if replace:
 
 
 # Some markup keywords
-start_unroll = "!$UNROLL"
-end_unroll = "!$END UNROLL"
-declare_unroll = "!$DEF"
-    
+start_unroll = "!$ROSE"
+end_unroll = "!$END ROSE"
+declare_unroll = "!$DEF-ROSE"
+
+# Indices used in new loops
+INDICES = ['ifunr','jfunr','kfunr','nfunr']
+
+# OMP pragmas
+ompStart = """
+!$omp target teams distribute parallel do collapse(%s)
+"""
+ompEnd = """!$omp end target teams distribute parallel do
+
+"""
 
 class iLoop():
 
@@ -43,7 +53,7 @@ class iLoop():
         self.header = header  # Header line
         self.loopBody = []
 
-        self.indices = ['ii','jj','kk','nn']
+        self.indices = INDICES
         self.dim = 'dim'
         self.var = 'var'
 
@@ -68,7 +78,7 @@ class iLoop():
         # Add new iterators
         
         def_str = lines[self.header].replace(
-            '!$DEF','integer :: %s,%s,%s\n' % ('ii','jj','kk') )
+            declare_unroll,'integer :: %s,%s,%s,%s \n' % tuple(self.indices) )
         del lines[self.header]
         lines.insert( self.header, def_str )
 
@@ -102,16 +112,20 @@ class iLoop():
         
         try:
             unroll = self.loopBody[0]
-            parms = eval(unroll.strip().replace('!$UNROLL','').strip())
+            parms = eval(unroll.strip().replace(start_unroll,'').strip())
             comment = unroll.split('!$')[0]
             indent = ''
         except:
+            print("Error in loop (l.%s) : %s" % (self.start+1,unroll) )
             import pdb
             pdb.set_trace()
             
         # Unrolled header
         my_indices = self.indices[:parms[self.dim]]
         my_indices.reverse()
+
+        # OMP start
+        new_code.append(ompStart % parms[self.dim])
         
         for dd in range(parms[self.dim]):
             code = (comment + indent
@@ -126,30 +140,48 @@ class iLoop():
         for dd in range(1,parms[self.dim]):
             index += ',' + my_indices[dd]
         index += ')'
+
+        # Colon syntax
+        colon = "(:"
+        for dd in range(1,parms[self.dim]):
+            colon += ",:"
+
         
         for code in self.loopBody[1:-1]:
-            esc = ['\n','+','-','*','/',')','(']
+            #esc = ['\n','+','-','*','/',')','(',';']
+            esc = ['\n','+','-','*','/',';','=']
             try:
                 for e in esc:
-                    code = code.replace(e," %s"%e)
+                    code = code.replace(e," %s "%e)
                     
-                #code = code.replace('\n',' \n')
-                #code = code.replace('*',' *')
-                #code = code.replace('+',' +')
-                #code = code.replace('-',' -')
-                mycode = re.findall('.*?[\W+]',code)
-
+                #code = code.replace('\n',' \n ')
+                #code = code.replace('*',' * ')
+                #code = code.replace('+',' + ')
+                #code = code.replace('-',' - ')
+                #code = code.replace(';',' ; ')
+                #mycode = code.split(" ")
+                mycode =  [e+" " for e in code.split(" ") if e]
+                #mycode = re.findall('.*?[\W+]',code)
+                #import pdb
+                #pdb.set_trace()
                 icode = []
                 for myvar in mycode:
-                    if myvar.strip() in parms[self.var]:
+                    if myvar.strip() in parms[self.var]:     # Check for 1:1 match
                         code =  myvar.strip() + index
+                        icode.append(code)
+                    elif colon in myvar.strip():             # Check for colon operators
+                        code = myvar.strip().replace(colon,index[:-1])
+                        icode.append(code)
+                    elif myvar.strip().replace(')','').replace('(','') in parms[self.var]:  # Vars next to parathesis
+                        tmp = myvar.strip().replace(')','').replace('(','')
+                        code = myvar.strip().replace(tmp,tmp+index)
                         icode.append(code)
                     else:
                         icode.append(myvar)
 
                 code = indent + comment + ''.join(icode) 
                 for e in esc:
-                    code = code.replace(" %s"%e,e)
+                    code = code.replace(" %s "%e,e)
                     
                 new_code.append( code )
                 
@@ -166,6 +198,10 @@ class iLoop():
 
             new_code.append( code )
 
+        # OMP end
+        new_code.append( ompEnd )
+            
+            
         self.newBody = new_code
             
         
@@ -221,7 +257,7 @@ for loops in myLoops:
 
 
 if not replace:
-    pid = open(file_name.replace('.f90','UNROLLED.f90') ,'w')
+    pid = open(file_name.replace('.f','UNROLLED.f90') ,'w')
 else:
     pid = open(file_name ,'w')
 
